@@ -20,6 +20,11 @@
   * 幂等：先取列表再逐个签，已签到的按「已签到」处理，不算失败
   * 节流：贴吧之间随机 1.0-2.5s，每 10 个额外 5-10s；失败的等 15s 刷新 tbs 后重试一轮
   * 脱敏：BDUSS 全程不进日志；响应体打印前抹掉凭据字段
+  * 日志脱敏：**默认不打印贴吧名**，只给「序号 + 短指纹」
+    （如 `[123/717 fp=a1b2c3d4]`）。失败时同样不打名字，只给指纹，
+    便于跨运行关联同一个贴吧，又不会把关注列表写进日志。
+    本机调试要看名字就设 `TIEBA_LOG_NAMES=1`。
+    → 这样即使仓库公开，Actions 日志也不会泄露你的关注画像。
   * 尾部：推送正文与日志都带统一尾部（来源 / 运行记录 / Token 认证日期）
     —— BDUSS 是不透明凭据、没有签发时间，所以**不显示有效期**，不伪造
   * 失败会 sys.exit(1)，让工作流真正报红，不被绿勾掩盖
@@ -67,6 +72,10 @@ REST_EVERY = int(os.environ.get("TIEBA_REST_EVERY", "30"))
 REST_MIN = float(os.environ.get("TIEBA_REST_MIN", "2"))
 REST_MAX = float(os.environ.get("TIEBA_REST_MAX", "4"))
 
+# 是否在日志里打印贴吧名。默认关闭——公开仓库的 Actions 日志
+# 对所有登录用户可见，打名字等于公开你的关注列表。本机调试时设 1 打开。
+SHOW_NAMES = os.environ.get("TIEBA_LOG_NAMES", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def now_bj() -> str:
     return datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -101,6 +110,23 @@ def mask_cred(value: str) -> str:
     if not value:
         return "<未配置>"
     return f"***(len={len(value)})"
+
+
+def short_fp(name: str) -> str:
+    """贴吧名的短指纹。稳定（同一个吧每次一样），但不可反推名字。
+
+    用途：跨运行关联同一个贴吧、定位问题，同时不把名字写进日志。
+    """
+    if not name:
+        return "--------"
+    return hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+
+
+def tag(name: str, idx: int, total: int) -> str:
+    """条目标识。默认「序号 + 短指纹」，只有显式开启才打名字。"""
+    if SHOW_NAMES and name:
+        return f"【{name}】({idx}/{total})"
+    return f"[{idx}/{total} fp={short_fp(name)}]"
 
 
 # ==================== HTTP ====================
@@ -376,16 +402,17 @@ def main() -> int:
         res = client.sign_forum(forum.get("id", ""), name, tbs)
         stats[res["status"]] += 1
 
-        prefix = f"【{name}】({idx + 1}/{total})"
+        mark = tag(name, idx + 1, total)
         if res["status"] == "success":
             rank_str = f"，第 {res['rank']} 个签到" if res["rank"] else ""
-            log(f"  {prefix} 签到成功{rank_str}")
+            log(f"  {mark} 签到成功{rank_str}")
         elif res["status"] == "exist":
-            log(f"  {prefix} {res['message']}")
+            log(f"  {mark} 已签到")
         elif res["status"] == "shield":
-            log(f"  {prefix} {res['message']}")
+            log(f"  {mark} 被屏蔽")
         else:
-            log(f"  {prefix} 签到失败：{res['message']}")
+            # 失败也只给指纹，不打名字
+            log(f"  {mark} 失败：{res['message']}")
             failed.append(forum)
 
     # 第二轮：刷新 tbs 后重试失败的
@@ -402,21 +429,22 @@ def main() -> int:
             time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
             name = forum.get("name", "")
             res = client.sign_forum(forum.get("id", ""), name, tbs)
+            mark = tag(name, idx + 1, len(failed))
             if res["status"] == "success":
                 stats["error"] -= 1
                 stats["success"] += 1
-                log(f"  【{name}】重试成功")
+                log(f"  重试 {mark} 成功")
             elif res["status"] == "exist":
                 stats["error"] -= 1
                 stats["exist"] += 1
-                log(f"  【{name}】重试返回今日已签到")
+                log(f"  重试 {mark} 已签到")
             elif res["status"] == "shield":
                 stats["error"] -= 1
                 stats["shield"] += 1
-                log(f"  【{name}】重试确认被屏蔽")
+                log(f"  重试 {mark} 被屏蔽")
             else:
-                final_failed.append(name)
-                log(f"  【{name}】重试仍失败：{res['message']}")
+                final_failed.append(short_fp(name))
+                log(f"  重试 {mark} 仍失败：{res['message']}")
 
     lines = [
         f"贴吧总数：{total}",
@@ -426,7 +454,9 @@ def main() -> int:
         f"签到失败：{stats['error']}",
     ]
     if final_failed:
-        lines.append(f"重试失败的贴吧：{', '.join(final_failed)}")
+        # 只给指纹，不给名字（想定位就本机设 TIEBA_LOG_NAMES=1 重跑）
+        lines.append(f"重试失败的条目指纹：{', '.join(final_failed)}")
+        lines.append("（指纹是贴吧名的短哈希，本机设 TIEBA_LOG_NAMES=1 可显示名字）")
     summary = "\n".join(lines)
     log("========== 签到汇总 ==========\n" + summary + "\n==============================")
 

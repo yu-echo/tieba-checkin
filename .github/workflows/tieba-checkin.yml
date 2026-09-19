@@ -50,6 +50,10 @@ jobs:
           TIEBA_MIN_DELAY: '0.3'
           TIEBA_MAX_DELAY: '0.8'
           TIEBA_REST_EVERY: '30'
+          # 日志脱敏（重要）：默认**不打印贴吧名**，只给「序号 + 短指纹」。
+          # 公开仓库的 Actions 日志对所有登录用户可见，打名字等于公开关注列表。
+          # 千万不要在这里设成 1；本机调试时才临时打开。
+          # TIEBA_LOG_NAMES: '0'
         run: python tieba_checkin.py
 
       # 防休眠保活：每 45 天自动提交一次，防止 GitHub 停用定时任务
