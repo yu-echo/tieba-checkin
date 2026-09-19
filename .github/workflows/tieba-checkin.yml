@@ -14,7 +14,9 @@ permissions:
 jobs:
   checkin:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 单 job 硬上限是 6 小时；这里给 120 分钟。
+    # 关注的贴吧越多耗时越长（717 个吧约需 25-30 分钟），别设太紧。
+    timeout-minutes: 120
 
     steps:
       - name: 检出代码
@@ -44,6 +46,10 @@ jobs:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           # 绝对路径：保证与上面 cache 的 path 指向同一文件
           TIEBA_STATE_FILE: ${{ github.workspace }}/.tieba-state.json
+          # 节流（可选）：贴吧数量多、嫌慢就调小；想更保守就调大
+          TIEBA_MIN_DELAY: '0.3'
+          TIEBA_MAX_DELAY: '0.8'
+          TIEBA_REST_EVERY: '30'
         run: python tieba_checkin.py
 
       # 防休眠保活：每 45 天自动提交一次，防止 GitHub 停用定时任务

@@ -57,6 +57,16 @@ CLIENT_VERSION = "9.7.8.0"
 BJ_TZ = timezone(timedelta(hours=8))
 TIMEOUT = 15
 
+# 节流参数（可用环境变量覆盖）。
+# 关注的贴吧越多，这两项越决定总耗时：717 个吧在 1.0-2.5s 档位下要跑约 40 分钟。
+# 默认取 0.3-0.8s，请求本身的往返已经构成自然节流。
+MIN_DELAY = float(os.environ.get("TIEBA_MIN_DELAY", "0.3"))
+MAX_DELAY = float(os.environ.get("TIEBA_MAX_DELAY", "0.8"))
+# 每 N 个贴吧额外休息一次
+REST_EVERY = int(os.environ.get("TIEBA_REST_EVERY", "30"))
+REST_MIN = float(os.environ.get("TIEBA_REST_MIN", "2"))
+REST_MAX = float(os.environ.get("TIEBA_REST_MAX", "4"))
+
 
 def now_bj() -> str:
     return datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -352,11 +362,13 @@ def main() -> int:
     stats = {"success": 0, "exist": 0, "shield": 0, "error": 0}
     failed = []
 
-    log(f"开始第 1 轮签到，共 {total} 个贴吧")
+    est = total * ((MIN_DELAY + MAX_DELAY) / 2 + 1.5) / 60
+    log(f"开始第 1 轮签到，共 {total} 个贴吧（预计约 {est:.0f} 分钟）")
+
     for idx, forum in enumerate(forums):
-        time.sleep(random.uniform(1.0, 2.5))
-        if (idx + 1) % 10 == 0:
-            rest = random.uniform(5, 10)
+        time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+        if (idx + 1) % REST_EVERY == 0:
+            rest = random.uniform(REST_MIN, REST_MAX)
             log(f"  已签到 {idx + 1}/{total}，休息 {rest:.1f}s")
             time.sleep(rest)
 
@@ -387,7 +399,7 @@ def main() -> int:
             log("  已刷新 tbs")
 
         for idx, forum in enumerate(failed):
-            time.sleep(random.uniform(1.5, 3.0))
+            time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
             name = forum.get("name", "")
             res = client.sign_forum(forum.get("id", ""), name, tbs)
             if res["status"] == "success":
