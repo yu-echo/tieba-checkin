@@ -1,0 +1,59 @@
+# 百度贴吧自动签到
+name: 贴吧自动签到
+
+on:
+  schedule:
+    # UTC 23:00 = 北京时间次日 07:00
+    - cron: '0 23 * * *'
+  workflow_dispatch:  # 支持手动触发，方便调试
+
+# 保活提交需要写权限（否则 git push 会 403）
+permissions:
+  contents: write
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 跨运行保留状态文件，用于在推送里标明 Token 认证日期。
+      # BDUSS 是不透明凭据、没有签发时间，只能记录「首次认证成功的日期」。
+      #
+      # key 带 run_id 保证每次都写入；restore-keys 前缀匹配拿回上一次的。
+      # path 必须与下面的 TIEBA_STATE_FILE 指向同一个文件。
+      - name: 恢复状态文件
+        uses: actions/cache@v4
+        with:
+          path: .tieba-state.json
+          key: tieba-state-${{ github.run_id }}
+          restore-keys: |
+            tieba-state-
+
+      - name: 执行签到
+        env:
+          TIEBA_BDUSS: ${{ secrets.TIEBA_BDUSS }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          # 绝对路径：保证与上面 cache 的 path 指向同一文件
+          TIEBA_STATE_FILE: ${{ github.workspace }}/.tieba-state.json
+        run: python tieba_checkin.py
+
+      # 防休眠保活：每 45 天自动提交一次，防止 GitHub 停用定时任务
+      # （GitHub 会停用 60 天无任何提交的仓库上的定时 workflow）
+      - name: 保活提交
+        if: github.event_name == 'schedule'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          date > .keepalive
+          git add .keepalive
+          git diff --quiet && git diff --staged --quiet || git commit -m "keepalive $(date)"
+          git push
