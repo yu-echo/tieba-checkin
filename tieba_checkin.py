@@ -85,6 +85,16 @@ def log(msg: str) -> None:
     print(f"[{now_bj()}] {msg}", flush=True)
 
 
+def fmt_duration(sec: float) -> str:
+    """把秒数格式化成「1 小时 2 分 3 秒」。"""
+    sec = max(0, int(sec))
+    m, s = divmod(sec, 60)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{h} 小时 {m} 分 {s} 秒"
+    return f"{m} 分 {s} 秒"
+
+
 # ==================== 脱敏 ====================
 
 _SENSITIVE_KEYS = {
@@ -367,20 +377,26 @@ def main() -> int:
                     "", state_path)
         return 1
 
+    started = time.time()
     log(f"凭据检查：BDUSS={mask_cred(bduss)}")
     client = TiebaClient(bduss)
 
+    t0 = time.time()
     tbs = client.get_tbs()
     if not tbs:
         push_notify("❌ 贴吧签到失败",
-                    "获取 tbs 失败，通常意味着 BDUSS 已失效。请重新从浏览器 F12 取一次。",
+                    "获取 tbs 失败，通常意味着 BDUSS 已失效。请重新从浏览器 F12 取一次。\n"
+                    f"耗时：{fmt_duration(time.time() - started)}",
                     bduss, state_path)
         return 1
-    log("tbs 获取成功")
+    log(f"tbs 获取成功（{fmt_duration(time.time() - t0)}）")
 
+    t0 = time.time()
     forums = client.get_favorites()
     if not forums:
-        push_notify("⚠️ 贴吧签到", "未获取到关注的贴吧（可能 BDUSS 失效或未关注任何贴吧）。",
+        push_notify("⚠️ 贴吧签到",
+                    "未获取到关注的贴吧（可能 BDUSS 失效或未关注任何贴吧）。\n"
+                    f"耗时：{fmt_duration(time.time() - started)}",
                     bduss, state_path)
         return 1
 
@@ -446,12 +462,16 @@ def main() -> int:
                 final_failed.append(short_fp(name))
                 log(f"  重试 {mark} 仍失败：{res['message']}")
 
+    elapsed = time.time() - started
+    per = elapsed / total if total else 0
     lines = [
         f"贴吧总数：{total}",
         f"签到成功：{stats['success']}",
         f"已经签到：{stats['exist']}",
         f"被屏蔽的：{stats['shield']}",
         f"签到失败：{stats['error']}",
+        f"耗时：{fmt_duration(elapsed)}（平均 {per:.1f} 秒/个）",
+        f"时间：{now_bj()}",
     ]
     if final_failed:
         # 只给指纹，不给名字（想定位就本机设 TIEBA_LOG_NAMES=1 重跑）
@@ -459,6 +479,7 @@ def main() -> int:
         lines.append("（指纹是贴吧名的短哈希，本机设 TIEBA_LOG_NAMES=1 可显示名字）")
     summary = "\n".join(lines)
     log("========== 签到汇总 ==========\n" + summary + "\n==============================")
+    log(f"总耗时：{fmt_duration(elapsed)}")
 
     # 已签到 / 被屏蔽 都属于正常结果，不算失败
     if stats["error"] > 0:
