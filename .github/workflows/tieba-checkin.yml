@@ -3,16 +3,53 @@ name: 贴吧自动签到
 
 on:
   schedule:
-    # UTC 23:00 = 北京时间次日 07:00
+    # UTC 23:00 = 北京时间次日 07:00（主跑）；UTC 07:00 = 北京 15:00（补跑）。
+    # 两槽换的不是「准点」，是「第二次机会」：实测派发延迟中位 2.8 小时、P90 3.7 小时，
+    # 负载高时还会整条丢。本仓库是公开仓库不烧配额，补跑只为防漏签。
     - cron: '0 23 * * *'
+    - cron: '0 7 * * *'
   workflow_dispatch:  # 支持手动触发，方便调试
 
 # 保活提交需要写权限（否则 git push 会 403）
 permissions:
   contents: write
+  # gate job 要读本 workflow 当天的运行记录
+  actions: read
 
 jobs:
+  # 补跑槽的守卫：今天已有成功运行就跳过。独立成 job 是为了不动下面任何一步。
+  # 查询失败一律按「今天没跑过」处理：宁可多跑一趟，不能漏签。
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.q.outputs.skip }}
+    steps:
+      - name: 查当天是否已有成功运行
+        id: q
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          now=$(date -u +%s)
+          # 北京当天 00:00 对应的 UTC 时刻（纯算术，不吃时区数据库）
+          day_start=$(( (now + 28800) / 86400 * 86400 - 28800 ))
+          since=$(date -u -d "@$day_start" +%Y-%m-%dT%H:%M:%SZ)
+          wf="${GITHUB_WORKFLOW_REF%@*}"
+          wf="${wf##*/.github/workflows/}"
+          n=$(curl -sS --max-time 15 \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${wf}/runs?per_page=50&created=%3E%3D${since}&status=success" \
+              | jq --arg me "${GITHUB_RUN_ID}" '[.workflow_runs[]? | select((.id|tostring) != $me)] | length' 2>/dev/null) || n=""
+          case "${n:-}" in ''|*[!0-9]*) echo "查询失败，按「今天没跑过」处理"; n=0 ;; esac
+          echo "北京当天起点 ${since}；今天已成功 ${n} 次"
+          if [ "$n" -gt 0 ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; else echo "skip=0" >> "$GITHUB_OUTPUT"; fi
+
   checkin:
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.skip != '1' }}
     runs-on: ubuntu-latest
     # 单 job 硬上限是 6 小时；这里给 120 分钟。
     # 关注的贴吧越多耗时越长（717 个吧约需 25-30 分钟），别设太紧。
